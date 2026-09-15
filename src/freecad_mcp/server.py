@@ -38,9 +38,11 @@ import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING, Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from freecad_mcp.config import FreecadMode, TransportType, get_config
 
@@ -83,15 +85,28 @@ async def get_bridge() -> "FreecadBridge":
     return _bridge
 
 
+def get_package_version() -> str:
+    """Return the installed package version for MCP server metadata.
+
+    Returns:
+        The installed distribution version, or a source-tree fallback when the
+        package metadata is unavailable.
+    """
+    try:
+        return distribution_version("freecad-robust-mcp")
+    except PackageNotFoundError:
+        return "0.0.0.dev0+unknown"
+
+
 @asynccontextmanager
-async def lifespan(_server: FastMCP) -> AsyncIterator[None]:
+async def lifespan(_server: MCPServer[Any]) -> AsyncIterator[None]:
     """Manage FreeCAD bridge lifecycle.
 
     This async context manager initializes the FreeCAD bridge on startup
     and disconnects it on shutdown.
 
     Args:
-        _server: The FastMCP server instance (unused).
+        _server: The MCP server instance (unused).
 
     Yields:
         None - the bridge is stored in the global _bridge variable.
@@ -156,8 +171,11 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[None]:
 
 
 # Create the Robust MCP Server instance with lifespan
-mcp = FastMCP(
+mcp = MCPServer(
     name="freecad-mcp",
+    title="FreeCAD Robust MCP Server",
+    description="Connect AI assistants to FreeCAD through a robust bridge.",
+    version=get_package_version(),
     lifespan=lifespan,
 )
 
@@ -384,13 +402,7 @@ def main() -> None:
 
     # Handle --version
     if args.version:
-        try:
-            from importlib.metadata import version
-
-            ver = version("freecad-mcp")
-        except Exception:
-            ver = "unknown"
-        print(f"freecad-mcp {ver}")
+        print(f"freecad-mcp {get_package_version()}")
         print(f"Instance ID: {INSTANCE_ID}")
         sys.exit(0)
 
@@ -426,7 +438,7 @@ def main() -> None:
     # Run the server
     if config.transport == TransportType.HTTP:
         logger.info("Starting HTTP transport on port %d", config.http_port)
-        mcp.run(  # type: ignore[call-arg]
+        mcp.run(
             transport="streamable-http",
             host="0.0.0.0",  # noqa: S104
             port=config.http_port,

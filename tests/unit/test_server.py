@@ -45,6 +45,28 @@ class TestGetInstanceId:
         assert id1 == id2
 
 
+class TestGetPackageVersion:
+    """Tests for package version metadata."""
+
+    def test_returns_distribution_version(self):
+        """Installed distribution metadata should supply the server version."""
+        import freecad_mcp.server as server_module
+
+        with patch.object(server_module, "distribution_version", return_value="0.7.0"):
+            assert server_module.get_package_version() == "0.7.0"
+
+    def test_returns_source_fallback_without_metadata(self):
+        """A source checkout without metadata should still report a version."""
+        import freecad_mcp.server as server_module
+
+        with patch.object(
+            server_module,
+            "distribution_version",
+            side_effect=server_module.PackageNotFoundError,
+        ):
+            assert server_module.get_package_version() == "0.0.0.dev0+unknown"
+
+
 class TestGetBridge:
     """Tests for get_bridge function."""
 
@@ -221,6 +243,29 @@ class TestRegisterAllComponents:
         # that the mcp instance exists and has tools registered
         assert mcp is not None
         assert mcp.name == "freecad-mcp"
+        assert mcp.version
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(3)
+    async def test_first_tool_call_completes(self):
+        """The first registered tool call should complete without hanging."""
+        import freecad_mcp.server as server_module
+
+        original_bridge = server_module._bridge
+        mock_bridge = AsyncMock()
+        mock_bridge.get_freecad_version.return_value = {
+            "version": "1.0.2",
+            "gui_available": True,
+        }
+
+        try:
+            server_module._bridge = mock_bridge
+            result = await server_module.mcp.call_tool("get_freecad_version", {})
+
+            assert result is not None
+            mock_bridge.get_freecad_version.assert_awaited_once_with()
+        finally:
+            server_module._bridge = original_bridge
 
 
 class TestMain:
@@ -259,6 +304,20 @@ class TestMain:
                 if "FREECAD_MCP_INSTANCE_ID=" in str(call)
             )
             assert instance_id_call.kwargs.get("file") == sys.stderr
+
+    def test_main_prints_package_version(self, capsys: pytest.CaptureFixture[str]):
+        """The version command should report the installed distribution."""
+        import freecad_mcp.server as server_module
+
+        with (
+            patch.object(sys, "argv", ["freecad-mcp", "--version"]),
+            patch.object(server_module, "get_package_version", return_value="0.7.0"),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            server_module.main()
+
+        assert exit_info.value.code == 0
+        assert "freecad-mcp 0.7.0" in capsys.readouterr().out
 
     def test_main_no_instance_id_without_testing_env(self):
         """Main should NOT print instance ID when FREECAD_MCP_TESTING is unset."""
