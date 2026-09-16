@@ -346,6 +346,7 @@ _result_ = {{
         sketch_name: str,
         length: float,
         type: str = "Length",
+        reversed: bool = False,
         name: str | None = None,
         doc_name: str | None = None,
     ) -> dict[str, Any]:
@@ -355,6 +356,9 @@ _result_ = {{
             sketch_name: Name of the sketch to pocket.
             length: Pocket depth.
             type: Pocket type: "Length", "ThroughAll", "UpToFirst", "UpToFace".
+            reversed: Flip the cut direction. Use True when the default
+                direction points away from the material and removes nothing.
+                Defaults to False.
             name: Pocket feature name. Auto-generated if None.
             doc_name: Document containing the sketch. Uses active document if None.
 
@@ -363,6 +367,11 @@ _result_ = {{
                 - name: Pocket name
                 - label: Pocket label
                 - type_id: Object type
+                - volume_before: Body volume before the pocket
+                - volume_after: Body volume after the pocket
+                - volume_removed: Material removed (volume_before - volume_after)
+                - warning: Present only when the pocket removed no material, so a
+                    caller can tell a no-op cut from a real one
         """
         bridge = await get_bridge()
 
@@ -383,6 +392,9 @@ for obj in doc.Objects:
 if body is None:
     raise ValueError("Sketch must be inside a PartDesign Body for Pocket operation")
 
+# Body volume before the pocket, so we can report how much was removed.
+volume_before = body.Shape.Volume if hasattr(body, "Shape") else 0.0
+
 # Wrap in transaction for undo support
 doc.openTransaction("Pocket Sketch")
 try:
@@ -391,6 +403,7 @@ try:
     pocket.Profile = sketch
     pocket.Length = {length}
     pocket.Type = {type!r}
+    pocket.Reversed = {reversed}
 
     doc.recompute()
     doc.commitTransaction()
@@ -398,11 +411,23 @@ except Exception:
     doc.abortTransaction()
     raise
 
+volume_after = body.Shape.Volume if hasattr(body, "Shape") else 0.0
+volume_removed = volume_before - volume_after
+
 _result_ = {{
     "name": pocket.Name,
     "label": pocket.Label,
     "type_id": pocket.TypeId,
+    "volume_before": volume_before,
+    "volume_after": volume_after,
+    "volume_removed": volume_removed,
 }}
+if abs(volume_removed) < 1e-6:
+    _result_["warning"] = (
+        "Pocket removed no material. The cut direction likely points away from "
+        "the solid. Try reversed=True, or place the profile sketch on the face "
+        "where the material is."
+    )
 """
         result = await bridge.execute_python(code)
         if result.success:
