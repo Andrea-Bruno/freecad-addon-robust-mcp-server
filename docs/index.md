@@ -27,7 +27,7 @@ just install::mcp-bridge-workbench
 # ...or extract the release archive into your FreeCAD Mod directory.
 
 # Start FreeCAD, switch to the "Robust MCP Bridge" workbench,
-# and click "Start Bridge" in the toolbar.
+# and click "Start MCP Bridge" in the toolbar.
 
 # Configure your MCP client and start building!
 ```
