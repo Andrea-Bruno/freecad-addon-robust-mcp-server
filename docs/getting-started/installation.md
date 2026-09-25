@@ -78,10 +78,10 @@ from the workbench dropdown.
 
 1. Download the latest release archive from
    [GitHub Releases](https://github.com/spkane/freecad-addon-robust-mcp-server/releases?q=robust-mcp-workbench&expanded=true)
-1. Extract the `freecad/RobustMCPBridge` folder into your FreeCAD `Mod/RobustMCPBridge/` directory, so the workbench ends up at `Mod/RobustMCPBridge/freecad/RobustMCPBridge/`. FreeCAD requires the `package.xml` there, which the installer generates for you.
-   - **Linux:** `~/.local/share/FreeCAD/Mod/`
-   - **macOS:** `~/Library/Application Support/FreeCAD/Mod/`
-   - **Windows:** `%APPDATA%\FreeCAD\v1-1\Mod\`
+1. Extract the release archive so the workbench lands at the new-style namespace layout `Mod/RobustMCPBridge/freecad/RobustMCPBridge/`. The archive ships the package as `freecad/RobustMCPBridge`, so place that folder under `Mod/RobustMCPBridge/`, not directly in `Mod`:
+   - **Linux:** `~/.local/share/FreeCAD/Mod/RobustMCPBridge/`
+   - **macOS:** `~/Library/Application Support/FreeCAD/Mod/RobustMCPBridge/`
+   - **Windows:** `%APPDATA%\FreeCAD\<version>\Mod\RobustMCPBridge\` (where `<version>` is your FreeCAD version directory: `v1-1`, `v1-2`, `v2-0`, ...)
 1. Restart FreeCAD.
 
 > Do **not** copy the whole repository into `Mod`. The installer builds the
