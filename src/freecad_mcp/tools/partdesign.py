@@ -340,9 +340,9 @@ _result_ = {{
         sketch_name: str,
         length: float,
         type: str = "Length",
-        reversed: bool = False,
         name: str | None = None,
         doc_name: str | None = None,
+        reversed: bool = False,
     ) -> dict[str, Any]:
         """Create a Pocket (cut extrusion) from a sketch.
 
@@ -350,11 +350,12 @@ _result_ = {{
             sketch_name: Name of the sketch to pocket.
             length: Pocket depth.
             type: Pocket type: "Length", "ThroughAll", "UpToFirst", "UpToFace".
-            reversed: Flip the cut direction. Use True when the default
-                direction points away from the material and removes nothing.
-                Defaults to False.
             name: Pocket feature name. Auto-generated if None.
             doc_name: Document containing the sketch. Uses active document if None.
+            reversed: Flip the cut direction. Use True when the default
+                direction points away from the material and removes nothing.
+                Defaults to False. Kept last so existing positional calls that
+                pass name before this option keep working.
 
         Returns:
             Dictionary with created pocket information:
