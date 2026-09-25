@@ -386,7 +386,9 @@ for obj in doc.Objects:
 if body is None:
     raise ValueError("Sketch must be inside a PartDesign Body for Pocket operation")
 
-# Body volume before the pocket, so we can report how much was removed.
+# Recompute first so the baseline reflects any pending changes to the body or
+# its dependencies; otherwise volume_removed would absorb unrelated edits.
+doc.recompute()
 volume_before = body.Shape.Volume if hasattr(body, "Shape") else 0.0
 
 # Wrap in transaction for undo support
