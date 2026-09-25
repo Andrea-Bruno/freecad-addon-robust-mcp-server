@@ -386,14 +386,15 @@ for obj in doc.Objects:
 if body is None:
     raise ValueError("Sketch must be inside a PartDesign Body for Pocket operation")
 
-# Recompute first so the baseline reflects any pending changes to the body or
-# its dependencies; otherwise volume_removed would absorb unrelated edits.
-doc.recompute()
-volume_before = body.Shape.Volume if hasattr(body, "Shape") else 0.0
-
-# Wrap in transaction for undo support
+# Wrap in transaction for undo support. The baseline recompute and read happen
+# inside the transaction so a failure there aborts cleanly instead of leaving a
+# half-applied recompute behind, and the baseline still reflects any pending
+# changes to the body or its dependencies.
 doc.openTransaction("Pocket Sketch")
 try:
+    doc.recompute()
+    volume_before = body.Shape.Volume if hasattr(body, "Shape") else 0.0
+
     pocket_name = {name!r} or "Pocket"
     pocket = body.newObject("PartDesign::Pocket", pocket_name)
     pocket.Profile = sketch
