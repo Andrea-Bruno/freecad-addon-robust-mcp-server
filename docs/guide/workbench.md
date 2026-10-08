@@ -42,7 +42,7 @@ and extract the `RobustMCPBridge` folder into your FreeCAD `Mod` directory:
 
 - **Linux:** `~/.local/share/FreeCAD/Mod/RobustMCPBridge/`
 - **macOS:** `~/Library/Application Support/FreeCAD/Mod/RobustMCPBridge/`
-- **Windows:** `%APPDATA%\FreeCAD\v1-1\Mod\RobustMCPBridge\`
+- **Windows:** `%APPDATA%\FreeCAD\<version>\Mod\RobustMCPBridge\` (where `<version>` is your FreeCAD version directory: `v1-1`, `v1-2`, `v2-0`, ...)
 
 Do **not** extract to `Mod/freecad/RobustMCPBridge/` — that is the wrong
 namespace layout and FreeCAD will not load it.
