@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import FreeCAD
+from freecad_mcp_bridge.qt_compat import load_qt_modules
 from path_utils import get_addon_path, get_icon_path
 
 # FreeCADGui is imported lazily in methods that need it, as this module
@@ -364,14 +365,7 @@ class MCPBridgePreferencesCommand:
             set_xmlrpc_port,
         )
 
-        # Import QtWidgets with fallback for different PySide versions
-        try:
-            from PySide6 import QtWidgets
-        except ImportError:
-            try:
-                from PySide2 import QtWidgets  # type: ignore[no-redef]
-            except ImportError:
-                from PySide import QtWidgets  # type: ignore[import-not-found,no-redef]
+        (QtWidgets,) = load_qt_modules("QtWidgets")
 
         # Create the dialog
         dialog = QtWidgets.QDialog(FreeCADGui.getMainWindow())

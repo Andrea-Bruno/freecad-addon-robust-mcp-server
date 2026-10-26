@@ -12,7 +12,14 @@ the actual preference storage. This module only handles the UI.
 
 from __future__ import annotations
 
-from PySide import QtCore, QtWidgets  # type: ignore[import-not-found]
+from typing import TYPE_CHECKING
+
+from freecad_mcp_bridge.qt_compat import load_qt_core_widgets
+
+if TYPE_CHECKING:
+    from PySide6 import QtCore, QtWidgets
+else:
+    QtCore, QtWidgets = load_qt_core_widgets()
 
 
 class MCPBridgePreferencesPage(QtWidgets.QWidget):

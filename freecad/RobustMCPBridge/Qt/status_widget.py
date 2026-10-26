@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from PySide import QtWidgets
 
+from freecad_mcp_bridge.qt_compat import load_qt_core_widgets, load_qt_modules
+
 # Global reference to the status widget (protected by _status_widget_lock)
 _status_widget: MCPStatusWidget | None = None
 _status_widget_lock = threading.Lock()
@@ -35,11 +37,7 @@ def _is_main_thread() -> bool:
         True if on main thread, False otherwise.
     """
     try:
-        # Try to import Qt (PySide6 first, then PySide2 as fallback)
-        try:
-            from PySide6 import QtCore, QtWidgets
-        except ImportError:
-            from PySide2 import QtCore, QtWidgets  # type: ignore[no-redef]
+        QtCore, QtWidgets = load_qt_core_widgets()
 
         # Get the QApplication instance
         app = QtWidgets.QApplication.instance()
@@ -107,7 +105,8 @@ class MCPStatusWidget:
 
         try:
             import FreeCADGui
-            from PySide import QtWidgets  # type: ignore[import-not-found]
+
+            (QtWidgets,) = load_qt_modules("QtWidgets")
 
             # Get the main window and status bar
             main_window = FreeCADGui.getMainWindow()

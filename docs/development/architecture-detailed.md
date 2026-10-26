@@ -829,7 +829,9 @@ class FreecadMCPPlugin:
 
         # Schedule execution in FreeCAD's main thread
         # Use FreeCAD's timer mechanism for thread safety
-        from PySide2 import QtCore
+        from freecad_mcp_bridge.qt_compat import load_qt_core
+
+        QtCore = load_qt_core()
 
         event = threading.Event()
 

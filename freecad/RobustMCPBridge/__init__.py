@@ -23,10 +23,17 @@ from typing import TYPE_CHECKING, Any  # noqa: E402
 if TYPE_CHECKING:
     from freecad_mcp_bridge.bridge_utils import GuiWaiter
 
+try:
+    from freecad_mcp_bridge.qt_compat import load_qt_core_widgets
+except ImportError:
+    # Repository tests import this module through freecad.RobustMCPBridge, while
+    # FreeCAD installs freecad_mcp_bridge as a top-level package.
+    from .freecad_mcp_bridge.qt_compat import load_qt_core_widgets
+
 FreeCAD.Console.PrintMessage("Robust MCP Bridge: Init loaded\n")
 
 # Global reference to GuiWaiter and auto-start timer to prevent garbage collection
-# Type annotations use Any for timer since it could be QTimer from PySide2 or PySide6
+# Type annotations use Any for timer since it could be QTimer from PySide6 or PySide2
 _auto_start_timer: Any | None = None
 _gui_waiter: GuiWaiter | None = None
 
@@ -155,14 +162,8 @@ try:
         _has_qapp = False
         _is_true_headless = False
 
-        try:
-            from PySide2 import QtCore, QtWidgets  # type: ignore[assignment, no-redef]
-        except (ImportError, NameError):
-            with contextlib.suppress(ImportError, NameError):
-                from PySide6 import (  # type: ignore[assignment, no-redef]
-                    QtCore,
-                    QtWidgets,
-                )
+        with contextlib.suppress(RuntimeError):
+            QtCore, QtWidgets = load_qt_core_widgets()
 
         # Detect GUI mode vs true headless mode
         # - True headless (freecadcmd): QCoreApplication exists but NOT QApplication
@@ -194,7 +195,7 @@ try:
             FreeCAD.Console.PrintMessage(
                 "Robust MCP Bridge: GUI already up, scheduling deferred start...\n"
             )
-            if QtCore is not None:
+            if QtCore is not None and QtWidgets is not None:
                 _auto_start_timer = QtCore.QTimer()
                 _auto_start_timer.setSingleShot(True)
                 _auto_start_timer.timeout.connect(_auto_start_bridge)
@@ -202,8 +203,9 @@ try:
             else:
                 # Never start a GUI bridge without a main-thread Qt timer.
                 FreeCAD.Console.PrintError(
-                    "Robust MCP Bridge: GUI is ready, but neither PySide2 nor "
-                    "PySide6 could be loaded. Auto-start was stopped.\n"
+                    "Robust MCP Bridge: GUI is ready, but a PySide binding matching "
+                    "FreeCAD's Qt version could not provide QtCore and QtWidgets. "
+                    "Auto-start was stopped.\n"
                 )
         elif _is_true_headless:
             # True headless mode - QCoreApplication exists but not QApplication
@@ -213,7 +215,7 @@ try:
                 "starting directly...\n"
             )
             _auto_start_bridge()
-        elif QtCore is not None:
+        elif QtCore is not None and QtWidgets is not None:
             # GUI not ready yet (either QApplication exists or no app yet)
             # Use GuiWaiter to wait for GuiUp to become True before starting
             # This ensures the bridge uses Qt timer (not background thread) for queue

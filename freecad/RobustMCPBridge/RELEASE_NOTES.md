@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- **FreeCAD compatibility CI**: GUI integration now runs in parallel against the final Qt5/PySide2 release, the latest stable Qt6/PySide6 release, and a non-blocking latest-weekly Qt6 canary.
+
 ### Fixed
 
-- **Qt6 startup compatibility**: The bridge now falls back to PySide6 when a present but partially initialized PySide2 compatibility module raises `NameError`.
+- **Qt binding selection**: The bridge now selects PySide6 for Qt 6 FreeCAD builds and PySide2 for Qt 5 builds, prefers PySide6 only when the host version cannot be detected, and refuses unsafe cross-major fallback.
 - **GUI thread safety during startup**: A GUI bridge now refuses to start if neither supported Qt binding can provide the main-thread queue timer. Background queue processing remains limited to genuine headless sessions.
 
 ## Version 0.6.2 (2026-01-18)

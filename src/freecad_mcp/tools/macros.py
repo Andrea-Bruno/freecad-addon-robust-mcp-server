@@ -265,7 +265,9 @@ doc.recompute()
 print("Created sketch with rectangle")
 """,
             "gui": """
-from PySide2 import QtWidgets
+from freecad_mcp_bridge.qt_compat import load_qt_modules
+
+(QtWidgets,) = load_qt_modules("QtWidgets")
 
 class MacroDialog(QtWidgets.QDialog):
     def __init__(self):

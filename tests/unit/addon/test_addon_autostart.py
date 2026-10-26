@@ -397,15 +397,9 @@ class TestAutoStartCodePaths:
         found = sum(1 for pattern in log_patterns if pattern in init_code)
         assert found >= 4, f"Expected 4 code paths with logging, found {found}"
 
-    def test_pyside_fallback_from_2_to_6(self, init_code: str) -> None:
-        """Should try PySide2 first, then fall back to PySide6."""
-        # Check for both imports
-        assert "PySide2" in init_code
-        assert "PySide6" in init_code
-        # PySide2 should be tried first (common pattern)
-        pyside2_pos = init_code.find("PySide2")
-        pyside6_pos = init_code.find("PySide6")
-        assert pyside2_pos < pyside6_pos, "Should try PySide2 before PySide6"
+    def test_uses_host_compatible_qt_loader(self, init_code: str) -> None:
+        """Auto-start should use the shared host-compatible Qt loader."""
+        assert "load_qt_core_widgets" in init_code
 
     def test_gui_without_qt_fails_closed(self, init_code: str) -> None:
         """A ready GUI without Qt bindings must not start the bridge directly."""
@@ -419,6 +413,7 @@ class TestAutoStartCodePaths:
         )
         branch_code = "\n".join(ast.unparse(node) for node in gui_up_branch.body)
 
+        assert "QtCore is not None and QtWidgets is not None" in branch_code
         assert "Auto-start was stopped" in branch_code
         assert branch_code.count("_auto_start_bridge()") == 0
 
@@ -443,8 +438,7 @@ class TestAutoStartCodePaths:
         self, init_code: str
     ) -> None:
         """PySide probes should tolerate the NameError seen on Qt6 builds."""
-        assert "except (ImportError, NameError)" in init_code
-        assert "suppress(ImportError, NameError)" in init_code
+        assert "load_qt_core_widgets" in init_code
 
     def test_true_headless_detection_via_isinstance(self, init_code: str) -> None:
         """Should use isinstance to detect true headless mode.
