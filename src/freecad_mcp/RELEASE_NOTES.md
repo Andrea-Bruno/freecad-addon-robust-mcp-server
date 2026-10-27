@@ -1,5 +1,22 @@
 # Robust MCP Server Release Notes
 
+## Unreleased
+
+### Fixed
+
+- **Execution timeout configuration**: `FREECAD_TIMEOUT_MS` now supplies the
+  default in XML-RPC, socket, and embedded modes, while per-call values take
+  precedence. XML-RPC proxy access is serialized to avoid concurrent use of
+  its non-thread-safe transport. Socket connections recover after a timed-out
+  response, select current streams only while holding the request lock, and do
+  not send work whose execution deadline expired while queued. Socket recovery
+  also runs outside the request lock to avoid reconnect deadlocks, and pre-send
+  deadline failures explicitly report that code was not executed. Socket write
+  backpressure and response reads share one bounded deadline, while the public
+  constructor retains its positional `auto_reconnect` argument. XML-RPC retains
+  execution compatibility with older workbenches that expose only the
+  one-argument `execute(code)` method.
+
 ## Version 0.6.2 (2026-01-18)
 
 No changes to the MCP server code itself. This release includes Docker image security improvements and repository restructuring.
