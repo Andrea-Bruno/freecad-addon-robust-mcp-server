@@ -44,12 +44,15 @@ if TYPE_CHECKING:
     from .authentication import BridgeAuthenticator
 
 if __package__:
-    from .qt_compat import get_host_qt_binding, load_qt_core
+    from .qt_compat import get_host_qt_binding, load_qt_core, load_qt_core_widgets
+    from .startup_policy import is_console_invocation
 else:
     from qt_compat import (  # type: ignore[import-not-found, no-redef]
         get_host_qt_binding,
         load_qt_core,
+        load_qt_core_widgets,
     )
+    from startup_policy import is_console_invocation  # type: ignore[import-not-found, no-redef]
 
 # Global registry of active servers for cleanup on Python exit
 # Uses weak references to avoid preventing garbage collection
@@ -125,11 +128,29 @@ def _cleanup_all_servers() -> None:
 # These imports only work inside FreeCAD
 try:
     import FreeCAD
-    import FreeCADGui
 
     FREECAD_AVAILABLE = True
 except ImportError:
     FREECAD_AVAILABLE = False
+
+try:
+    import FreeCADGui
+except ImportError:
+    FreeCADGui = None  # type: ignore[assignment]
+
+
+def _freecad_gui_up() -> bool:
+    """Return True when FreeCAD is present and its GUI is up.
+
+    ``FreeCAD.GuiUp`` does not exist until FreeCAD's application object has
+    finished initializing.  The bridge can legitimately be auto-started from a
+    workbench ``Init.py``, which runs *before* that point in the console
+    (headless) binary, so the attribute has to be read defensively -- reading
+    it directly raised ``AttributeError: module 'FreeCAD' has no attribute
+    'GuiUp'`` and aborted the headless auto-start.
+    """
+    return bool(getattr(FreeCAD, "GuiUp", False)) if FREECAD_AVAILABLE else False
+
 
 # Default configuration
 DEFAULT_SOCKET_PORT = 9876
@@ -349,7 +370,7 @@ def _get_qt_core() -> Any:
     Returns:
         The QtCore module if available in GUI mode, None otherwise.
     """
-    if not (FREECAD_AVAILABLE and FreeCAD.GuiUp):
+    if not _freecad_gui_up():
         return None
 
     with contextlib.suppress(RuntimeError):
@@ -596,6 +617,14 @@ class FreecadMCPPlugin:
             self._running = False
             raise
 
+        # Finish GUI setup before exposing either listener. If setup fails,
+        # stop the queue processor and discard any partially created timers.
+        try:
+            self._start_status_updates()
+        except Exception:
+            self.stop()
+            raise
+
         # Start socket server
         self._socket_thread = threading.Thread(
             target=self._run_socket_server,
@@ -622,9 +651,6 @@ class FreecadMCPPlugin:
                 FreeCAD.Console.PrintMessage(
                     f"  - XML-RPC: {self._host}:{self._xmlrpc_port}\n"
                 )
-
-        # Start status bar updates in GUI mode
-        self._start_status_updates()
 
     def stop(self) -> None:
         """Stop all servers.
@@ -825,7 +851,7 @@ class FreecadMCPPlugin:
         ``_cleanup_for_exit`` (via ``shiboken.delete()``) or by
         ``_stop_status_updates`` (via ``deleteLater()``).
         """
-        if not (FREECAD_AVAILABLE and FreeCAD.GuiUp):
+        if not _freecad_gui_up():
             return
 
         QtCore = _get_qt_core()
@@ -855,7 +881,7 @@ class FreecadMCPPlugin:
             self._status_timer = None
 
         # Clear status bar message
-        if FREECAD_AVAILABLE and FreeCAD.GuiUp:
+        if _freecad_gui_up():
             self._set_status_bar("")
             try:
                 from Qt.status_widget import update_status_stopped
@@ -866,7 +892,7 @@ class FreecadMCPPlugin:
 
     def _update_status_bar(self) -> None:
         """Update the FreeCAD status bar with MCP bridge status."""
-        if not (FREECAD_AVAILABLE and FreeCAD.GuiUp):
+        if not _freecad_gui_up():
             return
 
         # The bridge itself accepts Python from any paired client. Show this
@@ -905,7 +931,7 @@ class FreecadMCPPlugin:
         Args:
             message: Message to display in status bar.
         """
-        if not (FREECAD_AVAILABLE and FreeCAD.GuiUp):
+        if not _freecad_gui_up():
             return
 
         try:
@@ -939,8 +965,9 @@ class FreecadMCPPlugin:
         queue on the main thread—required because Qt widgets must only be
         touched from the thread that owns them.
 
-        In headless mode (``FreeCAD.GuiUp`` is False) a daemon background
-        thread polls the queue instead. No QTimer is created, so no timer
+        In confirmed headless mode a daemon background thread polls the queue.
+        A missing or false ``GuiUp`` alone does not establish headless mode.
+        No QTimer is created, so no timer
         cleanup is needed at shutdown. If GUI mode is active but neither Qt
         binding is usable, startup fails rather than processing GUI-sensitive
         work from a background thread.
@@ -949,10 +976,8 @@ class FreecadMCPPlugin:
         ``_cleanup_for_exit`` (via ``shiboken.delete()``) or by ``stop()``
         (via ``deleteLater()``).
         """
-        # Check if we're in GUI mode using FreeCAD.GuiUp
-        # Note: Qt (PySide) may be available even in headless mode, but without
-        # a running event loop, Qt timers won't fire. Use GuiUp to detect this.
-        gui_available = FREECAD_AVAILABLE and FreeCAD.GuiUp
+        # A ready GUI must always use its owning Qt thread.
+        gui_available = _freecad_gui_up()
 
         if gui_available:
             # GUI mode: use Qt timer for thread-safe GUI operations
@@ -972,9 +997,24 @@ class FreecadMCPPlugin:
             self._timer = timer
             return
 
-        # Headless mode: use a background thread for queue processing
-        # In headless mode, there's no GUI thread concern, so direct
-        # processing in a background thread is safe
+        # A false or missing GuiUp alone is ambiguous during GUI startup.
+        # Only a console executable or a positively identified non-GUI Qt
+        # application permits background execution.
+        confirmed_headless = False
+        try:
+            qtcore, qtwidgets = load_qt_core_widgets()
+            app = qtcore.QCoreApplication.instance()
+            if app is not None:
+                confirmed_headless = not isinstance(app, qtwidgets.QApplication)
+            else:
+                confirmed_headless = is_console_invocation(sys.executable, sys.argv[1:])
+        except RuntimeError:
+            confirmed_headless = is_console_invocation(sys.executable, sys.argv[1:])
+        if not confirmed_headless:
+            raise RuntimeError(
+                "Cannot confirm headless FreeCAD; refusing unsafe background "
+                "queue processing."
+            )
         self._headless = True
         self._queue_thread = threading.Thread(
             target=self._run_queue_processor_loop,

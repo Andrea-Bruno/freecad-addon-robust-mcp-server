@@ -38,7 +38,7 @@ _auto_start_timer: Any | None = None
 _gui_waiter: GuiWaiter | None = None
 
 
-def _auto_start_bridge() -> None:
+def _auto_start_bridge(headless: bool = False) -> None:
     """Auto-start the MCP bridge if configured in preferences.
 
     This function is called via a deferred timer (GUI mode) or directly
@@ -46,7 +46,7 @@ def _auto_start_bridge() -> None:
     without requiring the workbench to be selected.
 
     Args:
-        None.
+        headless: Select the headless auto-start preference.
 
     Returns:
         None. Early returns if auto-start is disabled or bridge is already running.
@@ -67,9 +67,9 @@ def _auto_start_bridge() -> None:
             QtCore.QTimer.singleShot(1000, _auto_start_bridge)
     """
     try:
-        from preferences import get_auto_start
+        from preferences import get_auto_start, get_auto_start_headless
 
-        if not get_auto_start():
+        if not (get_auto_start_headless() if headless else get_auto_start()):
             return
 
         # Check if bridge is already running
@@ -125,20 +125,44 @@ def _auto_start_bridge() -> None:
 # - If FreeCAD.GuiUp is False but QApplication exists: FreeCAD GUI is initializing.
 #   Use GuiWaiter to wait for GuiUp to become True before starting.
 #   This ensures the bridge uses Qt timer (not background thread) for queue processing.
-# - If no QApplication: True headless mode, start bridge directly
+# - A console executable or a non-GUI QCoreApplication confirms headless mode
+# - If mode is ambiguous, do not start a background queue
 #
 # IMPORTANT: We check for QApplication.instance() rather than just QtCore availability
-# because FreeCAD bundles PySide even in headless mode (freecadcmd), but there's no
-# Qt event loop running. Without a QApplication, Qt timers will never fire.
+# because FreeCAD bundles PySide even in headless mode (freecadcmd). An absent
+# QApplication alone is ambiguous while GUI initialization is still in progress.
 #
 # CRITICAL: We must wait for FreeCAD.GuiUp to be True before starting the bridge
 # in GUI mode. If we start when GuiUp is False, the bridge's _start_queue_processor()
 # will see GuiUp=False and use a background thread. Later, code executed on that
 # thread will try to do Qt operations, causing crashes (SIGABRT in QCocoaWindow).
+# Conservative argument classification is shared with the server startup policy.
+if __package__:
+    try:
+        from freecad_mcp_bridge.startup_policy import (
+            is_batch_invocation,
+            is_console_invocation,
+        )
+    except ImportError:
+        from .freecad_mcp_bridge.startup_policy import (
+            is_batch_invocation,
+            is_console_invocation,
+        )
+else:
+    from freecad_mcp_bridge.startup_policy import (
+        is_batch_invocation,
+        is_console_invocation,
+    )
+
+
 try:
     import os
 
-    from preferences import get_auto_start
+    from preferences import (
+        get_auto_start,
+        get_auto_start_headless,
+        get_auto_start_headless_batch,
+    )
 
     # In testing mode, skip auto-start so the test controls bridge lifecycle
     # via startup_bridge.py (same guard as in init_gui.py).
@@ -148,7 +172,7 @@ try:
             "Robust MCP Bridge: Auto-start skipped (FREECAD_MCP_TESTING set)\n"
         )
     else:
-        _autoStartEnabled = get_auto_start()
+        _autoStartEnabled = get_auto_start() or get_auto_start_headless()
     FreeCAD.Console.PrintMessage(
         f"Robust MCP Bridge: Auto-start preference = {_autoStartEnabled}\n"
     )
@@ -165,32 +189,32 @@ try:
         with contextlib.suppress(RuntimeError):
             QtCore, QtWidgets = load_qt_core_widgets()
 
-        # Detect GUI mode vs true headless mode
-        # - True headless (freecadcmd): QCoreApplication exists but NOT QApplication
-        # - GUI mode early startup: No app yet, or QApplication being initialized
-        # - GUI mode ready: FreeCAD.GuiUp is True
+        # The exact console executable is a positive signal even when no Qt
+        # application exists. Missing Qt or GuiUp alone are not sufficient.
+        import sys
+
+        _exe_name = sys.executable.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        _batch_run = is_batch_invocation(sys.argv[1:])
         if QtWidgets is not None and QtCore is not None:
-            qapp = QtWidgets.QApplication.instance()
-            if qapp is not None:
-                _has_qapp = True
-            else:
-                # No QApplication - check if QCoreApplication exists
-                # If QCoreApplication exists but is NOT a QApplication, it's true headless
-                qcore_app = QtCore.QCoreApplication.instance()
-                if qcore_app is not None and not isinstance(
-                    qcore_app, QtWidgets.QApplication
-                ):
-                    _is_true_headless = True
-                # If no app at all, assume early GUI startup (will use GuiWaiter)
+            qcore_app = QtCore.QCoreApplication.instance()
+            _has_qapp = isinstance(qcore_app, QtWidgets.QApplication)
+            _is_true_headless = not _has_qapp and (
+                qcore_app is not None
+                or is_console_invocation(sys.executable, sys.argv[1:])
+            )
+        else:
+            _is_true_headless = is_console_invocation(sys.executable, sys.argv[1:])
+        _is_true_headless = _is_true_headless and not getattr(FreeCAD, "GuiUp", False)
 
         FreeCAD.Console.PrintMessage(
-            f"Robust MCP Bridge: GuiUp={FreeCAD.GuiUp}, "
+            f"Robust MCP Bridge: GuiUp={getattr(FreeCAD, 'GuiUp', False)}, "
             f"QtCore={'available' if QtCore else 'unavailable'}, "
             f"QApp={'running' if _has_qapp else 'none'}, "
-            f"headless={_is_true_headless}\n"
+            f"headless={_is_true_headless}, bin={_exe_name or 'unknown'}, "
+            f"batch={_batch_run}\n"
         )
 
-        if FreeCAD.GuiUp:
+        if getattr(FreeCAD, "GuiUp", False) and get_auto_start():
             # GUI is already up - use timer for deferred start
             FreeCAD.Console.PrintMessage(
                 "Robust MCP Bridge: GUI already up, scheduling deferred start...\n"
@@ -208,13 +232,29 @@ try:
                     "Auto-start was stopped.\n"
                 )
         elif _is_true_headless:
-            # True headless mode - QCoreApplication exists but not QApplication
-            # No Qt event loop for GUI, so start bridge directly with background thread
-            FreeCAD.Console.PrintMessage(
-                "Robust MCP Bridge: True headless mode (QCoreApplication only), "
-                "starting directly...\n"
-            )
-            _auto_start_bridge()
+            # Console FreeCAD, no GUI event loop.  Start the bridge for a
+            # long-lived session (that is where an MCP client attaches) and use
+            # a background thread for queue processing.  Short-lived batch runs
+            # are skipped - they would only contend for the bridge ports.
+            if not get_auto_start_headless():
+                FreeCAD.Console.PrintMessage(
+                    "Robust MCP Bridge: headless auto-start disabled "
+                    "(AutoStartHeadless=False)\n"
+                )
+            elif _batch_run and not get_auto_start_headless_batch():
+                FreeCAD.Console.PrintMessage(
+                    "Robust MCP Bridge: batch console run (script/command given) "
+                    "- skipping auto-start (set AutoStartHeadlessBatch to "
+                    "enable)\n"
+                )
+            else:
+                FreeCAD.Console.PrintMessage(
+                    "Robust MCP Bridge: True headless mode (console FreeCAD), "
+                    "starting directly...\n"
+                )
+                _auto_start_bridge(headless=True)
+        elif not get_auto_start():
+            FreeCAD.Console.PrintMessage("Robust MCP Bridge: GUI auto-start disabled\n")
         elif QtCore is not None and QtWidgets is not None:
             # GUI not ready yet (either QApplication exists or no app yet)
             # Use GuiWaiter to wait for GuiUp to become True before starting
@@ -245,3 +285,56 @@ except Exception as e:
     import traceback
 
     FreeCAD.Console.PrintWarning(f"Traceback: {traceback.format_exc()}\n")
+
+
+def _release_startup_timers() -> None:
+    """Release only bridge-owned timers on their owning Qt thread."""
+    import contextlib
+
+    try:
+        from freecad_mcp_bridge.qt_compat import load_qt_core
+        from freecad_mcp_bridge.server import _get_shiboken_delete
+
+        qtcore = load_qt_core()
+        delete = _get_shiboken_delete()
+    except (ImportError, RuntimeError):
+        return
+
+    def release(timer: Any) -> bool:
+        if timer is None:
+            return True
+        try:
+            if timer.thread() != qtcore.QThread.currentThread():
+                return False
+            timer.stop()
+            with contextlib.suppress(RuntimeError, TypeError):
+                timer.timeout.disconnect()
+            if delete is not None:
+                delete(timer)
+            return True
+        except RuntimeError:
+            # A previously destroyed Qt object has nothing left to release.
+            return True
+
+    timer = globals().get("_auto_start_timer")
+    if release(timer):
+        globals()["_auto_start_timer"] = None
+    waiter = globals().get("_gui_waiter")
+    if waiter is not None:
+        for name in ("_check_timer", "_defer_timer"):
+            if release(getattr(waiter, name)):
+                setattr(waiter, name, None)
+
+
+# Prefer Qt's shutdown signal while the owner thread and objects still exist.
+# The atexit fallback only touches timers whose thread matches the current one.
+try:
+    import atexit
+
+    atexit.register(_release_startup_timers)
+    if QtCore is not None:
+        _application = QtCore.QCoreApplication.instance()
+        if _application is not None:
+            _application.aboutToQuit.connect(_release_startup_timers)
+except (NameError, AttributeError, RuntimeError):
+    pass

@@ -358,6 +358,73 @@ class TestStartQueueProcessor:
         assert plugin._socket_thread is None
         assert plugin._xmlrpc_thread is None
 
+    def test_status_setup_failure_stops_before_listeners(
+        self, server_mod: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Status setup failure cannot leave a running bridge or listener."""
+        plugin = server_mod.FreecadMCPPlugin(authenticator=MagicMock())
+        monkeypatch.setattr(plugin, "_start_queue_processor", MagicMock())
+        monkeypatch.setattr(
+            plugin,
+            "_start_status_updates",
+            MagicMock(side_effect=RuntimeError("status")),
+        )
+        with pytest.raises(RuntimeError, match="status"):
+            plugin.start()
+        assert plugin.is_running is False
+        assert plugin._socket_thread is None
+        assert plugin._xmlrpc_thread is None
+
+    def test_ambiguous_early_gui_fails_before_listener_creation(
+        self,
+        server_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_freecad: Any,
+    ) -> None:
+        """An uninitialized GUI must never start background execution."""
+        del fake_freecad.GuiUp
+        _enable_gui(server_mod, monkeypatch, fake_freecad)
+        monkeypatch.setattr(sys, "executable", "/opt/freecad/bin/freecad")
+        monkeypatch.setattr(
+            server_mod, "load_qt_core_widgets", MagicMock(side_effect=RuntimeError)
+        )
+        plugin = server_mod.FreecadMCPPlugin(
+            enable_xmlrpc=True, authenticator=MagicMock()
+        )
+        with pytest.raises(RuntimeError, match="Cannot confirm headless"):
+            plugin.start()
+        assert plugin.is_running is False
+        assert plugin._queue_thread is None
+        assert plugin._socket_thread is None
+        assert plugin._xmlrpc_thread is None
+
+    def test_console_executable_with_gui_application_fails_closed(
+        self,
+        server_mod: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_freecad: Any,
+    ) -> None:
+        """A GUI application takes precedence over the executable name."""
+        fake_freecad.GuiUp = False
+        _enable_gui(server_mod, monkeypatch, fake_freecad)
+        monkeypatch.setattr(sys, "executable", "/opt/freecad/bin/freecadcmd")
+
+        class Application:
+            pass
+
+        qtcore = MagicMock()
+        qtcore.QCoreApplication.instance.return_value = Application()
+        qtwidgets = types.SimpleNamespace(QApplication=Application)
+        monkeypatch.setattr(
+            server_mod, "load_qt_core_widgets", lambda: (qtcore, qtwidgets)
+        )
+        plugin = server_mod.FreecadMCPPlugin(authenticator=MagicMock())
+        with pytest.raises(RuntimeError, match="Cannot confirm headless"):
+            plugin.start()
+        assert plugin.is_running is False
+        assert plugin._queue_thread is None
+        assert plugin._socket_thread is None
+
     def test_headless_mode_uses_background_thread(
         self,
         server_mod: Any,
@@ -367,6 +434,7 @@ class TestStartQueueProcessor:
         """Headless sessions never create a Qt timer."""
         fake_freecad.GuiUp = False
         _enable_gui(server_mod, monkeypatch, fake_freecad)
+        monkeypatch.setattr(sys, "executable", "/opt/freecad/bin/freecadcmd")
         monkeypatch.setitem(sys.modules, "PySide6", _NameErrorModule("PySide6"))
         monkeypatch.setitem(sys.modules, "PySide2", _NameErrorModule("PySide2"))
         threads = self._fake_thread(monkeypatch)
@@ -501,8 +569,7 @@ def test_startup_script_prefers_pyside6_and_fails_closed() -> None:
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Attribute)
-        and node.test.attr == "GuiUp"
+        and "getattr(FreeCAD, 'GuiUp', False)" in ast.unparse(node.test)
     )
     branch_code = "\n".join(ast.unparse(node) for node in gui_up_branch.body)
 

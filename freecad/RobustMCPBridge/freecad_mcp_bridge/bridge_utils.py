@@ -104,6 +104,15 @@ class GuiWaiter:
             )
             return
 
+        # A timer cannot run before a Qt application exists. GUI startup can
+        # schedule its own callback later through init_gui.py.
+        if QtCore.QCoreApplication.instance() is None:
+            FreeCAD.Console.PrintMessage(
+                f"{self.log_prefix}: No Qt application/event loop available - "
+                "skipping timer-based GUI wait (it could never fire).\n"
+            )
+            return
+
         self._qtcore = QtCore
         self._check_timer = QtCore.QTimer()
         self._check_timer.setSingleShot(False)  # Repeating timer
