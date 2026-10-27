@@ -1,5 +1,7 @@
 """Tests for PartDesign tools module."""
 
+from collections.abc import Awaitable, Callable
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1126,3 +1128,142 @@ class TestPartDesignTools:
         assert result["success"] is True
         assert result["is_construction"] is True
         mock_bridge.execute_python.assert_called_once()
+
+
+class TestSymmetricExtrudeCompatibility:
+    """Symmetric extrusion must target the property the running FreeCAD has.
+
+    PartDesign::Pad has never had a `Symmetric` property. FreeCAD exposes
+    `Midplane`, and 1.1+ supersedes that with `SideType`, emitting a deprecation
+    warning when `Midplane` is set. Generated code therefore probes for the
+    property rather than assuming one, so a single build works across versions.
+    """
+
+    @pytest.fixture
+    def mock_mcp(self) -> MagicMock:
+        """Create an MCP test double that records tool registrations."""
+        mcp = MagicMock()
+        registered_tools: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {}
+        mcp._registered_tools = registered_tools
+
+        def tool_decorator() -> Callable[
+            [Callable[..., Awaitable[dict[str, Any]]]],
+            Callable[..., Awaitable[dict[str, Any]]],
+        ]:
+            def wrapper(
+                func: Callable[..., Awaitable[dict[str, Any]]],
+            ) -> Callable[..., Awaitable[dict[str, Any]]]:
+                registered_tools[func.__name__] = func
+                return func
+
+            return wrapper
+
+        mcp.tool = tool_decorator
+        return mcp
+
+    @pytest.fixture
+    def mock_bridge(self) -> AsyncMock:
+        """Create a successful bridge test double."""
+        bridge = AsyncMock()
+        bridge.execute_python = AsyncMock(
+            return_value=ExecutionResult(
+                success=True,
+                result={"success": True, "name": "F", "label": "F", "type_id": "T"},
+                stdout="",
+                stderr="",
+                error_traceback=None,
+                execution_time_ms=1.0,
+            )
+        )
+        return bridge
+
+    @pytest.fixture
+    def register_tools(
+        self,
+        mock_mcp: MagicMock,
+        mock_bridge: AsyncMock,
+    ) -> dict[str, Callable[..., Awaitable[dict[str, Any]]]]:
+        """Register Part Design tools against the bridge test double."""
+        from freecad_mcp.tools.partdesign import register_partdesign_tools
+
+        async def get_bridge() -> AsyncMock:
+            return mock_bridge
+
+        register_partdesign_tools(mock_mcp, get_bridge)
+        return mock_mcp._registered_tools
+
+    @staticmethod
+    def _generated(mock_bridge: AsyncMock) -> str:
+        """Return generated FreeCAD code after checking Python syntax."""
+        code = mock_bridge.execute_python.call_args[0][0]
+        # Generated code is exec'd inside FreeCAD, so it must at least parse.
+        compile(code, "<generated>", "exec")
+        return code
+
+    @pytest.mark.asyncio
+    async def test_pad_prefers_sidetype_and_falls_back(
+        self,
+        register_tools: dict[str, Callable[..., Awaitable[dict[str, Any]]]],
+        mock_bridge: AsyncMock,
+    ) -> None:
+        await register_tools["pad_sketch"](
+            sketch_name="Sketch", length=10.0, symmetric=True
+        )
+        code = self._generated(mock_bridge)
+
+        assert '"SideType" in pad.PropertiesList' in code
+        assert 'pad.SideType = "Symmetric" if _symmetric else "One side"' in code
+        assert 'elif "Midplane" in pad.PropertiesList' in code
+        assert "pad.Midplane = _symmetric" in code
+        assert 'elif "Symmetric" in pad.PropertiesList' in code
+        assert "pad.Symmetric = _symmetric" in code
+        # SideType must be tried first, or 1.1 emits a deprecation warning.
+        assert code.index('"SideType" in') < code.index('"Midplane" in')
+        assert code.index('"Midplane" in') < code.index('"Symmetric" in')
+        assert code.count("_symmetric =") == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool", "var"),
+        [("revolution_sketch", "rev"), ("groove_sketch", "groove")],
+    )
+    async def test_revolution_and_groove_use_compatibility_chain(
+        self,
+        register_tools: dict[str, Callable[..., Awaitable[dict[str, Any]]]],
+        mock_bridge: AsyncMock,
+        tool: str,
+        var: str,
+    ) -> None:
+        """Revolution and Groove support the same ordered property fallbacks."""
+        await register_tools[tool](sketch_name="Sketch", angle=360.0, symmetric=True)
+        code = self._generated(mock_bridge)
+
+        assert f'"SideType" in {var}.PropertiesList' in code
+        assert f'{var}.SideType = "Symmetric" if _symmetric else "One side"' in code
+        assert f'elif "Midplane" in {var}.PropertiesList' in code
+        assert f"{var}.Midplane = _symmetric" in code
+        assert f'elif "Symmetric" in {var}.PropertiesList' in code
+        assert f"{var}.Symmetric = _symmetric" in code
+        assert code.index('"SideType" in') < code.index('"Midplane" in')
+        assert code.index('"Midplane" in') < code.index('"Symmetric" in')
+        assert code.count("_symmetric =") == 1
+        assert "for feature in body.Origin.OriginFeatures" in code
+        assert 'getattr(feature, "Role", None) == axis_role' in code
+        assert "body.Origin.getObject" not in code
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("symmetric", [True, False])
+    async def test_symmetric_value_is_bound_once(
+        self,
+        register_tools: dict[str, Callable[..., Awaitable[dict[str, Any]]]],
+        mock_bridge: AsyncMock,
+        symmetric: bool,
+    ) -> None:
+        """The flag is bound to a local, so each branch reads the same value."""
+        await register_tools["pad_sketch"](
+            sketch_name="Sketch", length=10.0, symmetric=symmetric
+        )
+        code = self._generated(mock_bridge)
+
+        assert f"_symmetric = {symmetric}" in code
+        assert code.count("_symmetric =") == 1
