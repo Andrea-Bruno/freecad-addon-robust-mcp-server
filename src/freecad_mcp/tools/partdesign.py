@@ -414,13 +414,12 @@ try:
     pocket.Reversed = {reversed}
 
     doc.recompute()
+    volume_after = body.Shape.Volume if hasattr(body, "Shape") else 0.0
+    volume_removed = volume_before - volume_after
     doc.commitTransaction()
 except Exception:
     doc.abortTransaction()
     raise
-
-volume_after = body.Shape.Volume if hasattr(body, "Shape") else 0.0
-volume_removed = volume_before - volume_after
 
 _result_ = {{
     "name": pocket.Name,

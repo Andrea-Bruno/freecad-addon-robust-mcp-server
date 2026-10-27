@@ -4,6 +4,10 @@ Configure the FreeCAD Robust MCP Server using environment variables and MCP clie
 
 ---
 
+The server reads settings from its process environment. It does not automatically
+load a `.env` file from the current working directory. Configure variables in
+your MCP client or explicitly load them into the environment before startup.
+
 ## Environment Variables
 
 | Variable              | Description                                          | Default     |

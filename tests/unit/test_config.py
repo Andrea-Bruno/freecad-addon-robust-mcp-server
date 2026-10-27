@@ -111,32 +111,26 @@ class TestServerConfig:
 
         assert isinstance(config, ServerConfig)
 
-    def test_ignores_unrelated_keys_in_dotenv(self, tmp_path, monkeypatch):
-        """A shared .env with non-FREECAD keys must not crash startup.
-
-        Regression test for the extra_forbidden crash when the working
-        directory holds a .env with unrelated variables (e.g. a token).
-        """
+    def test_working_directory_dotenv_is_not_loaded(self, tmp_path, monkeypatch):
+        """A caller's .env cannot change configuration or prevent startup."""
         (tmp_path / ".env").write_text(
-            "GITHUB_PERSONAL_ACCESS_TOKEN=ghp_dummy\nSOME_OTHER=1\n",
+            "FREECAD_MODE=socket\nFREECAD_ALLOW_UNSAFE_CODE=true\nUNRELATED=x\n",
             encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
         with mock.patch.dict(os.environ, {}, clear=True):
             config = ServerConfig()
-
         assert config.mode == FreecadMode.EMBEDDED
+        assert config.allow_unsafe_code is False
 
-    def test_reads_freeCAD_keys_from_dotenv(self, tmp_path, monkeypatch):
-        """FREECAD_-prefixed keys in .env should still be applied."""
-        (tmp_path / ".env").write_text(
-            "FREECAD_MODE=socket\nUNRELATED=x\n", encoding="utf-8"
-        )
+    def test_environment_overrides_ignored_working_directory_dotenv(
+        self, tmp_path, monkeypatch
+    ):
+        """Explicit environment settings remain supported."""
+        (tmp_path / ".env").write_text("FREECAD_MODE=embedded\n", encoding="utf-8")
         monkeypatch.chdir(tmp_path)
-        with mock.patch.dict(os.environ, {}, clear=True):
-            config = ServerConfig()
-
-        assert config.mode == FreecadMode.SOCKET
+        with mock.patch.dict(os.environ, {"FREECAD_MODE": "socket"}, clear=True):
+            assert ServerConfig().mode == FreecadMode.SOCKET
 
 
 class TestFreecadMode:

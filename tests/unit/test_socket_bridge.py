@@ -636,8 +636,8 @@ class TestSocketBridgeScreenshotCodegen:
                 execution_time_ms=1.0,
             )
 
-        bridge.execute_python = fake_exec
-        result = await bridge.get_screenshot(view_angle=ViewAngle.ISOMETRIC)
+        with mock.patch.object(bridge, "execute_python", side_effect=fake_exec):
+            result = await bridge.get_screenshot(view_angle=ViewAngle.ISOMETRIC)
 
         assert result.success is True
         assert "type(view).__name__" in captured["code"]
@@ -667,7 +667,7 @@ class TestSocketBridgeScreenshotCodegen:
                 execution_time_ms=1.0,
             )
 
-        bridge.execute_python = fake_exec
-        await bridge.get_screenshot(view_angle=ViewAngle.TOP)
+        with mock.patch.object(bridge, "execute_python", side_effect=fake_exec):
+            await bridge.get_screenshot(view_angle=ViewAngle.TOP)
 
         compile(captured["code"], "<mcp>", "exec")
