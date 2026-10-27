@@ -53,8 +53,6 @@ class ServerConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="FREECAD_",
-        env_file=".env",
-        env_file_encoding="utf-8",
         case_sensitive=False,
     )
 

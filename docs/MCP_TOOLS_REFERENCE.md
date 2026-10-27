@@ -655,9 +655,14 @@ pocket_sketch(
     length: float,
     type: str = "Length",  # "Length", "ThroughAll", "UpToFirst", "UpToFace"
     name: str | None = None,
-    doc_name: str | None = None
+    doc_name: str | None = None,
+    reversed: bool = False  # Flip the cut direction
 ) -> dict
 ```
+
+The result includes `volume_before`, `volume_after`, and `volume_removed` in
+cubic millimeters. A `warning` indicates a cut that removed no material; check
+the sketch position and direction before exporting the model.
 
 #### groove_sketch
 
