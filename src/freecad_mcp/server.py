@@ -34,6 +34,7 @@ Example:
 import argparse
 import logging
 import os
+import secrets
 import sys
 import uuid
 from collections.abc import AsyncIterator
@@ -45,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
+from freecad_mcp.bridge.authentication import credentials_from_config
 from freecad_mcp.config import FreecadMode, ServerConfig, TransportType, get_config
 
 if TYPE_CHECKING:
@@ -147,10 +149,13 @@ async def lifespan(_server: MCPServer[Any]) -> AsyncIterator[None]:
     elif config.mode == FreecadMode.XMLRPC:
         from freecad_mcp.bridge.xmlrpc import XmlRpcBridge
 
+        client_id, signer = credentials_from_config(config)
         _bridge = XmlRpcBridge(
             host=config.socket_host,
             port=config.xmlrpc_port,
             execution_timeout_ms=config.timeout_ms,
+            client_id=client_id,
+            signer=signer,
         )
         logger.info(
             "Using XML-RPC bridge: %s:%d", config.socket_host, config.xmlrpc_port
@@ -159,10 +164,13 @@ async def lifespan(_server: MCPServer[Any]) -> AsyncIterator[None]:
     else:  # SOCKET mode
         from freecad_mcp.bridge.socket import SocketBridge
 
+        client_id, signer = credentials_from_config(config)
         _bridge = SocketBridge(
             host=config.socket_host,
             port=config.socket_port,
             execution_timeout_ms=config.timeout_ms,
+            client_id=client_id,
+            signer=signer,
         )
         logger.info(
             "Using socket bridge: %s:%d", config.socket_host, config.socket_port
@@ -207,7 +215,9 @@ def register_all_components() -> None:
     # Register tools
     from freecad_mcp.tools import register_all_tools
 
-    register_all_tools(mcp, get_bridge)
+    register_all_tools(
+        mcp, get_bridge, allow_unsafe_code=get_config().allow_unsafe_code
+    )
 
     # Register resources
     from freecad_mcp.resources import register_resources
@@ -268,19 +278,25 @@ async def check_freecad_connection(
         elif config.mode == FreecadMode.XMLRPC:
             from freecad_mcp.bridge.xmlrpc import XmlRpcBridge
 
+            client_id, signer = credentials_from_config(config)
             bridge = XmlRpcBridge(
                 host=config.socket_host,
                 port=config.xmlrpc_port,
                 execution_timeout_ms=config.timeout_ms,
+                client_id=client_id,
+                signer=signer,
             )
             print(f"  Host: {config.socket_host}:{config.xmlrpc_port}")
         else:
             from freecad_mcp.bridge.socket import SocketBridge
 
+            client_id, signer = credentials_from_config(config)
             bridge = SocketBridge(
                 host=config.socket_host,
                 port=config.socket_port,
                 execution_timeout_ms=config.timeout_ms,
+                client_id=client_id,
+                signer=signer,
             )
             print(f"  Host: {config.socket_host}:{config.socket_port}")
 
@@ -346,6 +362,7 @@ Environment Variables:
   FREECAD_TRANSPORT      Transport type: stdio or http (default: stdio)
   FREECAD_HTTP_HOST      Bind address for HTTP transport (default: 127.0.0.1)
   FREECAD_HTTP_PORT      Port for HTTP transport (default: 8000)
+  FREECAD_HTTP_API_KEY   Required bearer key for HTTP transport
   FREECAD_HTTP_ALLOWED_HOSTS
                          JSON array of accepted Host values
   FREECAD_HTTP_ALLOWED_ORIGINS
@@ -361,6 +378,8 @@ Examples:
   FREECAD_MODE=socket freecad-mcp
 
   # Use local HTTP transport
+  # Generate a key, store it securely, then set FREECAD_HTTP_API_KEY.
+  freecad-mcp --generate-http-api-key
   FREECAD_TRANSPORT=http FREECAD_HTTP_PORT=8080 freecad-mcp
 
   # Connect to remote FreeCAD instance
@@ -379,6 +398,17 @@ Prerequisites:
         "--version",
         action="store_true",
         help="Show version information and exit",
+    )
+
+    parser.add_argument(
+        "--generate-http-api-key",
+        action="store_true",
+        help="Generate an HTTP API key and exit; store the output securely",
+    )
+    parser.add_argument(
+        "--pair-bridge",
+        action="store_true",
+        help="Create a private per-user FreeCAD bridge credential and exit",
     )
 
     parser.add_argument(
@@ -430,6 +460,17 @@ def main() -> None:
     # Parse arguments first - this handles --help without connecting to FreeCAD
     args = parse_args()
 
+    if args.generate_http_api_key:
+        print(secrets.token_urlsafe(32))
+        return
+
+    if args.pair_bridge:
+        from freecad_mcp.bridge.credential_store import create_credential
+
+        client_id = create_credential()
+        print(f"Bridge pairing created for client {client_id}.")
+        return
+
     # Handle --version
     if args.version:
         print(f"freecad-mcp {get_package_version()}")
@@ -467,14 +508,27 @@ def main() -> None:
 
     # Run the server
     if config.transport == TransportType.HTTP:
+        import uvicorn
+
+        from freecad_mcp.http_auth import ApiKeyMiddleware
+
+        if config.http_api_key is None:
+            raise RuntimeError("HTTP transport requires FREECAD_HTTP_API_KEY")
+        app = mcp.streamable_http_app(
+            host=config.http_host,
+            transport_security=build_http_transport_security(config),
+        )
+        authenticated_app = ApiKeyMiddleware(
+            app, config.http_api_key.get_secret_value()
+        )
         logger.info(
             "Starting HTTP transport on %s:%d", config.http_host, config.http_port
         )
-        mcp.run(
-            transport="streamable-http",
+        uvicorn.run(
+            authenticated_app,
             host=config.http_host,
             port=config.http_port,
-            transport_security=build_http_transport_security(config),
+            log_level=mcp.settings.log_level.lower(),
         )
     else:
         logger.info("Starting stdio transport")

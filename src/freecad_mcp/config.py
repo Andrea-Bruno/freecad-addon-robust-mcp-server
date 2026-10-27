@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,8 @@ class ServerConfig(BaseSettings):
         socket_host: Hostname for socket/xmlrpc connection.
         socket_port: Port for JSON-RPC socket connection (default 9876).
         xmlrpc_port: Port for XML-RPC connection (default 9875, neka-nat compatible).
+        bridge_client_id: Identifier of an explicitly configured bridge client.
+        bridge_secret: Shared bridge credential, redacted from configuration output.
         timeout_ms: Default execution timeout in milliseconds.
         max_output_size: Maximum output size in bytes.
         transport: MCP transport type.
@@ -79,6 +81,8 @@ class ServerConfig(BaseSettings):
         int,
         Field(ge=1, le=65535, description="XML-RPC server port (neka-nat compatible)"),
     ] = 9875
+    bridge_client_id: str | None = None
+    bridge_secret: SecretStr | None = None
 
     # Execution limits
     timeout_ms: Annotated[
@@ -100,6 +104,7 @@ class ServerConfig(BaseSettings):
         int,
         Field(ge=1, le=65535, description="HTTP server port"),
     ] = 8000
+    http_api_key: SecretStr | None = None
     http_allowed_hosts: list[str] = Field(
         default_factory=lambda: ["127.0.0.1:*", "localhost:*", "[::1]:*"],
         description="Allowed HTTP Host header values",
@@ -120,6 +125,7 @@ class ServerConfig(BaseSettings):
     enable_sandbox: bool = True
     allow_file_access: bool = True
     allow_network_access: bool = False
+    allow_unsafe_code: bool = False
 
 
 def get_config() -> ServerConfig:

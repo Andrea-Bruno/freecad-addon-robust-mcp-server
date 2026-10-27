@@ -170,16 +170,68 @@ class TestSocketBridge:
 class TestSocketBridgeCommunication:
     """Tests for socket communication."""
 
+    @pytest.fixture(autouse=True)
+    def paired_signer(self, monkeypatch):
+        """Supply a test signer for communication tests using mock streams."""
+        original = SocketBridge.__init__
+
+        def initialize(bridge, *args, **kwargs):
+            kwargs.setdefault("client_id", "test-client")
+            kwargs.setdefault("signer", lambda _message: b"test-proof")
+            original(bridge, *args, **kwargs)
+
+        monkeypatch.setattr(SocketBridge, "__init__", initialize)
+
+    @staticmethod
+    def authenticated_responses(result):
+        """Provide a fresh challenge followed by one server response."""
+        return [
+            json.dumps({"challenge": "A" * 43}).encode() + b"\n",
+            json.dumps({"jsonrpc": "2.0", "id": "test", "result": result}).encode()
+            + b"\n",
+        ]
+
     @pytest.fixture
     def mock_streams(self):
         """Create mock reader and writer streams."""
         reader = mock.AsyncMock(spec=asyncio.StreamReader)
+        reader.at_eof.return_value = False
         writer = mock.MagicMock(spec=asyncio.StreamWriter)
         writer.is_closing.return_value = False
         writer.drain = mock.AsyncMock()
         writer.close = mock.MagicMock()
         writer.wait_closed = mock.AsyncMock()
         return reader, writer
+
+    @pytest.mark.asyncio
+    async def test_idle_closed_stream_is_reconnected_before_sending(
+        self, mock_streams
+    ) -> None:
+        """Reconnect a known-closed idle stream before sending a mutation."""
+        old_reader, old_writer = mock_streams
+        old_reader.at_eof.return_value = True
+        new_reader = mock.AsyncMock(spec=asyncio.StreamReader)
+        new_reader.at_eof.return_value = False
+        new_reader.readline.side_effect = self.authenticated_responses("done")
+        new_writer = mock.MagicMock(spec=asyncio.StreamWriter)
+        new_writer.is_closing.return_value = False
+        new_writer.drain = mock.AsyncMock()
+        new_writer.wait_closed = mock.AsyncMock()
+        bridge = SocketBridge()
+        bridge._reader, bridge._writer, bridge._connected = old_reader, old_writer, True
+
+        async def open_replacement() -> None:
+            bridge._reader, bridge._writer, bridge._connected = (
+                new_reader,
+                new_writer,
+                True,
+            )
+
+        with mock.patch.object(bridge, "_open_streams", side_effect=open_replacement):
+            assert await bridge._send_request("execute", {"code": "work()"}) == "done"
+        old_writer.write.assert_not_called()
+        old_writer.close.assert_called_once()
+        assert new_writer.write.call_count == 2
 
     @pytest.mark.asyncio
     async def test_send_request_format(self, mock_streams):
@@ -220,6 +272,21 @@ class TestSocketBridgeCommunication:
         assert bridge._reader is None
         assert bridge._writer is None
         assert bridge._connected is False
+
+    @pytest.mark.asyncio
+    async def test_oversized_response_discards_connection(self, mock_streams) -> None:
+        """An oversized response must close the stream and report a clear error."""
+        reader, writer = mock_streams
+        reader.readline.side_effect = [
+            json.dumps({"challenge": "A" * 43}).encode() + b"\n",
+            ValueError("response exceeds limit"),
+        ]
+        bridge = SocketBridge()
+        bridge._reader, bridge._writer, bridge._connected = reader, writer, True
+        with pytest.raises(ConnectionError, match="response exceeds the socket limit"):
+            await bridge._send_request("execute", {"code": "pass"})
+        writer.close.assert_called_once()
+        assert bridge._reader is None and bridge._writer is None
 
     @pytest.mark.asyncio
     async def test_drain_timeout_discards_connection_and_releases_lock(
@@ -343,14 +410,12 @@ class TestSocketBridgeCommunication:
             "_open_streams",
             new=mock.AsyncMock(side_effect=slow_open),
         ):
-            with pytest.raises(TimeoutError) as error:
+            with pytest.raises(ConnectionError, match="execution may have occurred"):
                 await bridge._send_request(
                     "execute",
                     {"code": "possibly_sent"},
                     request_timeout=0.01,
                 )
-
-        assert not isinstance(error.value, RequestNotSentError)
 
     @pytest.mark.asyncio
     async def test_waiting_request_selects_streams_after_acquiring_lock(
@@ -362,10 +427,7 @@ class TestSocketBridgeCommunication:
         replacement_reader = mock.AsyncMock(spec=asyncio.StreamReader)
         replacement_writer = mock.MagicMock(spec=asyncio.StreamWriter)
         replacement_writer.drain = mock.AsyncMock()
-        replacement_reader.readline.return_value = (
-            json.dumps({"jsonrpc": "2.0", "id": "new", "result": "done"}).encode()
-            + b"\n"
-        )
+        replacement_reader.readline.side_effect = self.authenticated_responses("done")
         bridge = SocketBridge()
         bridge._reader = old_reader
         bridge._writer = old_writer
@@ -386,14 +448,14 @@ class TestSocketBridgeCommunication:
 
         assert await request == "done"
         old_writer.write.assert_not_called()
-        replacement_writer.write.assert_called_once()
+        assert replacement_writer.write.call_count == 2
 
     @pytest.mark.asyncio
     async def test_connection_reset_reconnects_outside_request_lock(
         self,
         mock_streams,
     ) -> None:
-        """Connection recovery should complete without retaining the request lock."""
+        """A reset during a request must not resend a possible mutation."""
         failed_reader, failed_writer = mock_streams
         failed_writer.drain.side_effect = ConnectionResetError("reset")
         replacement_reader = mock.AsyncMock(spec=asyncio.StreamReader)
@@ -419,15 +481,15 @@ class TestSocketBridgeCommunication:
             "_open_streams",
             new=mock.AsyncMock(side_effect=reconnect),
         ) as connect:
-            result = await asyncio.wait_for(
-                bridge._send_request("execute", {"code": "retry"}),
-                timeout=1.0,
-            )
+            with pytest.raises(ConnectionError, match="execution may have occurred"):
+                await asyncio.wait_for(
+                    bridge._send_request("execute", {"code": "retry"}),
+                    timeout=1.0,
+                )
 
-        assert result == "done"
-        connect.assert_awaited_once_with()
+        connect.assert_not_awaited()
         failed_writer.close.assert_called_once_with()
-        replacement_writer.write.assert_called_once()
+        replacement_writer.write.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_next_request_reconnects_after_response_timeout(
@@ -448,10 +510,7 @@ class TestSocketBridgeCommunication:
         replacement_reader = mock.AsyncMock(spec=asyncio.StreamReader)
         replacement_writer = mock.MagicMock(spec=asyncio.StreamWriter)
         replacement_writer.drain = mock.AsyncMock()
-        replacement_reader.readline.return_value = (
-            json.dumps({"jsonrpc": "2.0", "id": "test-2", "result": "done"}).encode()
-            + b"\n"
-        )
+        replacement_reader.readline.side_effect = self.authenticated_responses("done")
 
         async def reconnect() -> None:
             bridge._reader = replacement_reader
@@ -467,7 +526,7 @@ class TestSocketBridgeCommunication:
 
         assert result == "done"
         connect.assert_awaited_once_with()
-        replacement_writer.write.assert_called_once()
+        assert replacement_writer.write.call_count == 2
 
     @pytest.mark.asyncio
     async def test_missing_streams_do_not_reconnect_when_disabled(self) -> None:
